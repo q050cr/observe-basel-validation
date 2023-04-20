@@ -1,0 +1,11 @@
+.Rproj.user
+.Rhistory
+.Rdata
+.httr-oauth
+.DS_Store
+._*
+
+# dirs
+paper-backing/
+references/
+study-plan-outline/

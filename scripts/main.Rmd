@@ -1,0 +1,421 @@
+---
+title: "External validation of the novel 0/3h-criteria for the observe-zone of the ESC 0/1h-hs-cTnT-algorithm"
+author: | 
+        | christoph.reich@med.uni-heidelberg.de 
+        | pedro.lopezayala@usb.ch
+        | christian.mueller@usb.ch
+        | evangelos.giannitsis@med.uni-heidelberg.de
+        | Klinik für Kardiologie, Angiologie und Pneumologie
+        | Universitätsklinikum Heidelberg
+        | 
+date: "`r format(Sys.time(), '%d %B, %Y, %H:%M')`"
+knit: (function(input, ...) {
+    rmarkdown::render(
+      input,
+      output_file = paste0(  
+        Sys.Date(), '-',  "main", '.html'
+      ),
+      output_dir = "./reports",  
+      envir = globalenv()
+    )
+  })
+output: 
+  html_document:
+    theme: paper
+    toc: true
+    number_sections: true
+    toc_float: true
+    toc_depth: 4
+    df_print: kable
+    latex_engine: xelatex
+bibliography: ./references/references.bib
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE)
+
+## FILTER study cohort to be considered (derivation/ validation) in Section Demographics (Chunk {r vars})
+
+# Patient 1537 duplicated (see Demographics Follow up time)
+
+# `classified_df1`  ... contains all rules
+# `classified_df2`  ... filtered 1 insufficient time interval + all patients without second trop available
+```
+
+
+![AG Meder](../../img/meder_presentation_heart.png)
+
+
+```{r dependencies, include=FALSE}
+library(readxl)
+library(janitor)
+library(dplyr)
+library(tidyr)
+library(stringr)
+library(purrr)
+library(ggplot2)
+library(skimr)
+library(tableone)
+library(Hmisc)
+library(RColorBrewer)
+
+cols <- brewer.pal(3, "BuGn")
+pal <- colorRampPalette(cols)
+```
+
+
+```{r load-data, include=FALSE, warning=FALSE}
+# load datat
+# rapid_orig <- clean_names(readxl::read_excel("../data-musti/Rapid_Rule_Out_Komplett.xlsx"))
+rapid_orig <- clean_names(readxl::read_excel("../predictACS-CAD123/data-musti/20220716new/Rapid_Rule_Out_20220711.xlsx"))
+cohort_info_dat <- clean_names(readxl::read_excel("../predictACS-CAD123/data-gianni/Kopie von Tabelle mit Copeptin und Observe.xlsx"))
+```
+
+# Version Update
+
+The new report version includes: 
+
+- Initial analysis
+
+
+\clearpage
+
+# Tidy data
+
+To run our algorithm and also to simulate different protocols we need to clean and reshape
+our data. We are going to create a new dataframe `classification_dat` that will contain 
+all measured hs-TroponinT values including the absolute time value. Unlike the original 
+dataframe we are not sorting time between blood drawing by different columns, but will use
+the absolute datetimes.
+\
+Furthermore, we need to filter the original data: `Category__1._NSTEMI_eligible__2._UA_eligible__3._Non_ACS_eligible__4._STEMI__5._Ineligible_` only categories
+ 1, 2 or 3 are elgible for our analysis. We can look at the number of patients in each group: 
+
+
+```{r tidy-data}
+# the cpu admission date is in a bad format, so we have to do some hard coding
+new.date <- c()
+for (i in 1:nrow(rapid_orig)) {
+  if (nchar(sub('\\.[0-9]+', '', rapid_orig["cpu_admission_date"][[1]][i])) == 7) {
+    new.date[i] <- paste0(0, rapid_orig["cpu_admission_date"][[1]][i])
+  } else {
+    new.date[i] <- rapid_orig["cpu_admission_date"][[1]][i]
+  }
+}
+
+rapid_orig <- rapid_orig %>% 
+  mutate(cpu_admission_time = 
+           as.POSIXct(paste(strptime(new.date, "%d%m%Y"), # date
+                 format(rapid_orig$cpu_admission_time, format = "%H:%M:%S")), # hour
+                 format="%Y-%m-%d %H:%M:%S"),
+         t4_hstnt_effective_date_time = t0_hstnt_effective_date_time + t4x_hstnt_t_diff  # only time diff valid
+  ) %>% 
+  # delete NAs in symptombeginn (0 means NA here)
+  mutate(across(symptombeginn_1_0_3h_2_3_6h_3_6h_0_unbekannt_nicht_einzugrenzen, ~replace(., is.na(.), 0))) 
+
+
+# Different categories
+table(rapid_orig$category_1_nstemi_eligible_2_ua_eligible_3_non_acs_eligible_4_stemi_5_ineligible)
+
+data01 <- rapid_orig %>% 
+  cbind(cohort_info_dat[c("rap_id_1", "kohorte_1derivation_2validation")]) %>% 
+  filter(category_1_nstemi_eligible_2_ua_eligible_3_non_acs_eligible_4_stemi_5_ineligible <= 3) %>% 
+  select(rap_id, pid, kohorte_1derivation_2validation, age, sex_f1_m0, t0_krea_value, 
+         # GRACE
+         grace_score, 
+         # CV Risk
+         h_hypertonie, h_diabetes, h_cholesterin, aktiver_raucher, h_familienana,
+         # History
+         h_khk, h_infarkt, h_pci, h_cabg,
+         # final ACS diagnoses
+         category_1_nstemi_eligible_2_ua_eligible_3_non_acs_eligible_4_stemi_5_ineligible, 
+         symptombeginn_1_0_3h_2_3_6h_3_6h_0_unbekannt_nicht_einzugrenzen, cpu_admission_time, procedere_entlassung,
+         # trops
+         t0_hstnt_value, t0_hstnt_effective_date_time, 
+         t1_hstnt_value, t1_hstnt_effective_date_time,
+         t2_hstnt_value, t2_hstnt_effective_date_time,
+         t3_hstnt_value, t3_hstnt_effective_date_time,
+         t4x_hstnt_value, t4_hstnt_effective_date_time) %>% 
+  rename(symptombeginn=symptombeginn_1_0_3h_2_3_6h_3_6h_0_unbekannt_nicht_einzugrenzen)
+```
+
+## New Troponin dataframe
+
+We create the new Troponin dataframe and have a glimpse on it. 
+
+```{r create-new-trop-df, warning=FALSE}
+c_trops <- paste(
+  data01["t0_hstnt_value"][[1]],
+  data01["t1_hstnt_value"][[1]],
+  data01["t2_hstnt_value"][[1]],
+  data01["t3_hstnt_value"][[1]],
+  data01["t4x_hstnt_value"][[1]],
+  sep = ","
+)
+c_trops <- str_replace_all(c_trops, pattern=",NA", replacement = "")
+
+time_trops <- paste(
+  data01["t0_hstnt_effective_date_time"][[1]],
+  data01["t1_hstnt_effective_date_time"][[1]],
+  data01["t2_hstnt_effective_date_time"][[1]],
+  data01["t3_hstnt_effective_date_time"][[1]],
+  data01["t4_hstnt_effective_date_time"][[1]],
+  sep = ","
+)
+time_trops <- str_replace_all(time_trops, pattern=",NA", replacement = "")
+
+classification_dat <- data.frame(
+  rap_id=data01$rap_id,
+  pid=data01$pid,
+  c_trops=c_trops,
+  time_trops=time_trops)
+
+classification_dat <- classification_dat %>% 
+  separate(c_trops, c("trop_c0", "trop_c1", "trop_c2", "trop_c3"), sep =",") %>% 
+  separate(time_trops, c("t0_hstnt", "t1_hstnt", "t2_hstnt", "t3_hstnt"), sep = ",") %>% 
+  mutate(across(3:6, as.numeric),
+         across(7:10, as.POSIXct, tz="CET")) 
+
+#head(classification_dat)
+#glimpse(classification_dat)
+```
+
+## Combine with metadata
+
+Now we add the other cols of interest:
+
+```{r combine-dat}
+classification_dat <- classification_dat %>% 
+  left_join(data01, by = c("rap_id", "pid")) %>% 
+  select(-(t0_hstnt_value:t4_hstnt_effective_date_time))
+```
+
+And we we need to create the necessary cols derived from those above:
+
+```{r}
+classification_dat <- classification_dat %>% 
+  mutate(delta_t_min=as.numeric(t1_hstnt-t0_hstnt, units="mins"),
+         delta_t_trop2=as.numeric(t2_hstnt-t0_hstnt, units="mins"),
+         absolute_delta_c = abs(trop_c1 - trop_c0),
+         absolute_delta_c_3h = abs(trop_c2 - trop_c0),
+         absolute_delta_c_frac_trop0 = absolute_delta_c/ trop_c0
+         ) %>% 
+  relocate(symptombeginn:cpu_admission_time, .before = trop_c0) %>% 
+  relocate(delta_t_min:absolute_delta_c_frac_trop0, .before = age)
+#glimpse(classification_dat)
+```
+
+
+# Program Decisions
+
+## Step 1: 0/1h Algorithm
+
+Code for the different decision algorithms: 0h, 0/1h, 0/2h, 0/3h algorithm. The preferred algorithm is the 0h and 0/1h algorithm. Also important is the variable encoding for `symptombeginn`: $1 = 0-3 h$, $2 = 3-6 h$, $3 \ge 6 h$, $0 = unbekannt$. 
+
+```{r primary-algorithm-analysis}
+# SELECT ESC Algorithm and prefer 0/1h 
+applied_rule <- c()
+applied_rule1 <- c()
+
+# there is one observation with delta_t_min == 30, the algorithm is trained on the interval not including 30 minutes (usually would evaluate to "Insufficient time interval between samples")
+## DIXIT Giannitsis 2022-07ö-18 Mail: dieser Fall darf miteingeschlossen werden, daher manuelle Änderung der Zeit auf 31min
+index=  which(classification_dat$delta_t_min <= 30)
+classification_dat[index, "delta_t_min"] <- 31
+
+for(i in 1:nrow(classification_dat)){ 
+  # seq through every observation, highest priority conditions at beginning combined with `next`statement
+  
+  ### ESC 0h -----------------------------------------------------------------
+  if (classification_dat[[i, "symptombeginn"]] >=2 &   # symptom onset 3-6h
+      classification_dat[[i, "trop_c0"]] < 5) {
+    applied_rule[i] <- "Rule-out (ESC 0h)"
+    applied_rule1[i] <- "Rule-out"
+    next
+  }
+  if (classification_dat[[i, "symptombeginn"]] ==3 &   # symptom onset >= 6h
+      classification_dat[[i, "trop_c0"]] <= 14) {
+    applied_rule[i] <- "Rule-out (ESC 0h)"
+    applied_rule1[i] <- "Rule-out"
+    next
+  }
+  if (classification_dat[[i, "trop_c0"]] >= 52) {
+    applied_rule[i] <- "Rule-in (ESC 0h)"
+    applied_rule1[i] <- "Rule-in"
+    next
+  }
+  
+  ### NOT ELIGIBLE ----------------------------------------------------------
+  # no second troponin (e.g. due to discharge against medical advice)
+  if ( is.na(classification_dat[[i, "delta_t_min"]]) ) {
+    applied_rule[i] <- "No second Trop Measurement available"
+    applied_rule1[i] <- "Not eligible"
+    next
+  }
+  
+  # insufficient 0/1h time; cannot adhere to protocol
+  if (classification_dat[[i, "delta_t_min"]] <= 30 | classification_dat[[i, "delta_t_min"]] >= 90 ) {
+    applied_rule[i] <- "Not eligible due to 2nd troponin time delta (<30 or >90min)"
+    applied_rule1[i] <- "Not eligible"
+    next
+  }
+  
+  
+  ### ESC 0/1h ---------------------------------------------------------------
+  if (classification_dat[[i, "delta_t_min"]] > 30 & classification_dat[[i, "delta_t_min"]] <= 90 &
+      classification_dat[[i, "trop_c0"]] < 12 & classification_dat[[i, "absolute_delta_c"]] < 3) {
+    applied_rule[i] <- "Rule-out (ESC 0/1h)"
+    applied_rule1[i] <- "Rule-out"
+    next
+  }
+  if (classification_dat[[i, "delta_t_min"]] > 30 & classification_dat[[i, "delta_t_min"]] <= 90 &
+      classification_dat[[i, "absolute_delta_c"]] >= 5) {
+    applied_rule[i] <- "Rule-in (ESC 0/1h)"
+    applied_rule1[i] <- "Rule-in"
+    next
+  }
+  # observe
+  if ( (classification_dat[[i, "delta_t_min"]] > 30 & classification_dat[[i, "delta_t_min"]] <= 90) &
+       ( classification_dat[[i, "trop_c0"]] >= 12 | 
+       classification_dat[[i, "absolute_delta_c"]] >= 3 ) &
+       classification_dat[[i, "absolute_delta_c"]] < 5 ) {
+    applied_rule[i] <- "Observation zone (ESC 0/1h)"
+    applied_rule1[i] <- "Observation zone"
+    next
+  }
+}
+
+classification_dat <- as_tibble(cbind(classification_dat, applied_rule, applied_rule1)) %>% 
+  mutate_if(is.numeric, round, digits=2)
+```
+
+
+The following table shows the adjudication for patients classified in the Observe Zone according to the 0/1h algorithm decision:  
+
+```{r}
+classification_dat1 <- classification_dat %>% 
+  filter(applied_rule1=="Observation zone") %>% 
+  rename(adjudication = category_1_nstemi_eligible_2_ua_eligible_3_non_acs_eligible_4_stemi_5_ineligible) %>% 
+  mutate(adjudication = factor(adjudication, labels = c("NSTEMI", "UA", "Non-ACS")))
+
+classification_dat1 %>% 
+  select(adjudication) %>% 
+  table() %>% 
+  as_tibble()
+```
+
+
+
+```{r observe-zone-numbers}
+missing.trop.observe = classification_dat %>% 
+  filter(is.na(delta_t_trop2), 
+         applied_rule1=="Observation zone"
+  ) %>% 
+  nrow()
+
+trop3.trop.observe.time.correct = classification_dat %>% 
+  filter(delta_t_trop2 >= 150, 
+         delta_t_trop2<=210, 
+         applied_rule1=="Observation zone"
+  ) %>% 
+  nrow()
+
+trop3.trop.observe.time.unspecified = classification_dat %>% 
+  filter(!is.na(delta_t_trop2) &
+         applied_rule1=="Observation zone"
+  ) %>% 
+  nrow()
+```
+
+
+Classification after 0/1 h algorithm: 
+
+`r table(applied_rule) %>% as_tibble()`
+
+In `r missing.trop.observe` patients who were assigned to the observation zone according to the 0/1 algorithm decision no 3rd troponin measurement is reported/ provided in the data. In `r trop3.trop.observe.time.correct` patients a third troponin was measured in the specified time frame (3rd troponin [150min; 210min]). In `r trop3.trop.observe.time.unspecified` patients a third troponin was measured. We provide a scatterplot of the third troponin measurement versus time: 
+
+
+```{r distribution-3rd-trop}
+dist.plot.trop3 <- classification_dat %>% 
+  filter(applied_rule1=="Observation zone" & !is.na(delta_t_trop2)) 
+         
+ggplot(dist.plot.trop3, aes(x=delta_t_trop2, y=trop_c2))+
+  geom_point(alpha=0.4) +
+  geom_vline(xintercept = c(150, 210), alpha =0.3, colour="red")+
+  labs(title = "Third Troponin against time")+
+  xlab(label = "Delta time third troponin")+
+  ylab(label = "Third Troponin (pg/mL)") +
+  theme_bw()
+```
+
+## Step 2: Observation Zone Decisions
+
+
+```{r 2ndstep-primary-algorithm-analysis}
+classification_dat1 <- classification_dat1 %>% 
+  filter(!is.na(delta_t_trop2) &
+         applied_rule1=="Observation zone")
+
+cutoff_us <- 7 
+
+# all patients with absolute trop3 >= 15 cannot be ruled out according to novel basel algo! 
+#     -> stay in observe zone
+
+case_basel_rule3h <- function(delta_time_3h, delta_absolute_trop, trop3) {
+  case_when(
+    is.na(delta_time_3h) ~ "No third trop available",
+    delta_time_3h < 150 ~ "3rd trop measured too early", 
+    delta_time_3h > 210 ~ "3rd trop measured too late", 
+    delta_time_3h >=150 & delta_time_3h <=210 & trop3 < 15 & delta_absolute_trop < 4 ~ "Rule-out",
+    delta_time_3h >=150 & delta_time_3h <=210 & delta_absolute_trop >= 6 ~ "Rule-in", 
+    .default = "Observation zone"
+    # delta_time_3h >=150 & delta_time_3h <=210 & 
+    # (delta_absolute_trop >=4 & delta_absolute_trop<6) | (trop3 >= 15 & delta_absolute_trop < 4)
+  )
+}
+
+case_us_rule3h <- function(delta_time_3h, delta_absolute_trop) {
+  case_when(
+    is.na(delta_time_3h) ~ "No third trop available",
+    delta_time_3h < 150 ~ "3rd trop measured too early", 
+    delta_time_3h > 210 ~ "3rd trop measured too late", 
+    delta_absolute_trop < 7 ~ "Rule-out",
+    delta_absolute_trop >= 7 ~ "Rule-in",
+    .default = "error-not-specified!"
+  )
+}
+
+classification_dat1 <- classification_dat1 %>% 
+  mutate(applied_rule_3h_basel = 
+           case_basel_rule3h(delta_time_3h = delta_t_trop2, 
+                             delta_absolute_trop = absolute_delta_c_3h,
+                             trop3 = trop_c2),
+         applied_rule_3h_us = 
+           case_us_rule3h(delta_time_3h = delta_t_trop2,
+                          delta_absolute_trop = absolute_delta_c_3h)
+  )
+
+```
+
+
+\clearpage
+
+# References
+
+<div id="refs"></div>
+
+
+\clearpage
+
+
+# Software
+
+This analysis was carried out using the statistical software `r base::version$version.string`.
+
+Apart from R's base functionality, the following packages were used: <br/>
+
+```{r software, echo=FALSE}
+# or faster with function...
+installed.packages()[names(sessionInfo()$otherPkgs), "Version"]
+```
+
+

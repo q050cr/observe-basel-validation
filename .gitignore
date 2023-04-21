@@ -6,6 +6,8 @@
 ._*
 
 # dirs
+output/
 paper-backing/
 references/
+reports/
 study-plan-outline/

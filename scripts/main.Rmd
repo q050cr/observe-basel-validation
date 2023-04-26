@@ -28,7 +28,7 @@ output:
     toc_depth: 4
     df_print: kable
     latex_engine: xelatex
-bibliography: ./references/references.bib
+bibliography: ../references/references.bib
 ---
 
 ```{r setup, include=FALSE}
@@ -47,6 +47,15 @@ knitr::opts_chunk$set(echo = FALSE)
 
 
 ```{r dependencies, include=FALSE}
+# Set the working directory to the directory containing the R Markdown file
+knitr::opts_knit$set(root.dir = rprojroot::find_rstudio_root_file())
+
+knitr::opts_chunk$set(echo = FALSE, 
+                      fig.path = "../output/figures/",  # still a rmd relative file structure here
+                      dev = "svg")
+
+saveFILES <- FALSE
+
 library(readxl)
 library(janitor)
 library(dplyr)
@@ -54,6 +63,7 @@ library(tidyr)
 library(stringr)
 library(purrr)
 library(ggplot2)
+library(gt)
 library(skimr)
 library(tableone)
 library(Hmisc)
@@ -139,11 +149,12 @@ data01 <- rapid_orig %>%
   rename(symptombeginn=symptombeginn_1_0_3h_2_3_6h_3_6h_0_unbekannt_nicht_einzugrenzen)
 ```
 
-## New Troponin dataframe
 
-We create the new Troponin dataframe and have a glimpse on it. 
 
 ```{r create-new-trop-df, warning=FALSE}
+## New Troponin dataframe
+# We create the new Troponin dataframe and have a glimpse on it. 
+
 c_trops <- paste(
   data01["t0_hstnt_value"][[1]],
   data01["t1_hstnt_value"][[1]],
@@ -180,19 +191,21 @@ classification_dat <- classification_dat %>%
 #glimpse(classification_dat)
 ```
 
-## Combine with metadata
 
-Now we add the other cols of interest:
 
 ```{r combine-dat}
+# ## Combine with metadata
+# Now we add the other cols of interest:
+
 classification_dat <- classification_dat %>% 
   left_join(data01, by = c("rap_id", "pid")) %>% 
   select(-(t0_hstnt_value:t4_hstnt_effective_date_time))
 ```
 
-And we we need to create the necessary cols derived from those above:
+
 
 ```{r}
+# And we we need to create the necessary cols derived from those above:
 classification_dat <- classification_dat %>% 
   mutate(delta_t_min=as.numeric(t1_hstnt-t0_hstnt, units="mins"),
          delta_t_trop2=as.numeric(t2_hstnt-t0_hstnt, units="mins"),
@@ -210,7 +223,7 @@ classification_dat <- classification_dat %>%
 
 ## Step 1: 0/1h Algorithm
 
-Code for the different decision algorithms: 0h, 0/1h, 0/2h, 0/3h algorithm. The preferred algorithm is the 0h and 0/1h algorithm. Also important is the variable encoding for `symptombeginn`: $1 = 0-3 h$, $2 = 3-6 h$, $3 \ge 6 h$, $0 = unbekannt$. 
+Code for the decision algorithms with the preferred algorithm 0h and 0/1h ESC algorithm. 
 
 ```{r primary-algorithm-analysis}
 # SELECT ESC Algorithm and prefer 0/1h 
@@ -286,8 +299,14 @@ for(i in 1:nrow(classification_dat)){
 
 classification_dat <- as_tibble(cbind(classification_dat, applied_rule, applied_rule1)) %>% 
   mutate_if(is.numeric, round, digits=2)
+
+n.observe <- classification_dat %>% 
+  filter(applied_rule1 == "Observation zone") %>% 
+  nrow()
 ```
 
+
+**`r n.observe` patients** were classified into the observe zone assigned to the 0/1 h ESC algorithm. 
 
 The following table shows the adjudication for patients classified in the Observe Zone according to the 0/1h algorithm decision:  
 
@@ -300,7 +319,8 @@ classification_dat1 <- classification_dat %>%
 classification_dat1 %>% 
   select(adjudication) %>% 
   table() %>% 
-  as_tibble()
+  as_tibble() %>% 
+  rename(ObserveZoneClassification=adjudication)
 ```
 
 
@@ -329,9 +349,7 @@ trop3.trop.observe.time.unspecified = classification_dat %>%
 
 Classification after 0/1 h algorithm: 
 
-`r table(applied_rule) %>% as_tibble()`
-
-In `r missing.trop.observe` patients who were assigned to the observation zone according to the 0/1 algorithm decision no 3rd troponin measurement is reported/ provided in the data. In `r trop3.trop.observe.time.correct` patients a third troponin was measured in the specified time frame (3rd troponin [150min; 210min]). In `r trop3.trop.observe.time.unspecified` patients a third troponin was measured. We provide a scatterplot of the third troponin measurement versus time: 
+In **`r missing.trop.observe` patients** who were assigned to the observation zone according to the 0/1 algorithm decision no 3rd troponin measurement is reported/ provided in the data. In **`r trop3.trop.observe.time.correct` patients** a third troponin was measured in the specified time frame (3rd troponin [150min; 210min]). In **`r trop3.trop.observe.time.unspecified` patients** a third troponin was measured. We provide a scatterplot of the third troponin measurement versus time: 
 
 
 ```{r distribution-3rd-trop}
@@ -394,6 +412,36 @@ classification_dat1 <- classification_dat1 %>%
                           delta_absolute_trop = absolute_delta_c_3h)
   )
 
+
+```
+
+
+## Performance measures
+
+Here we show the numbers and diagnoses for the 0/3h Basel algorithm: 
+
+```{r classific-basel}
+classification_dat1 %>% 
+  select(applied_rule_3h_basel, adjudication) %>% 
+  table()
+```
+
+Here we show the numbers and diagnoses for the 0/3h US algorithm (*Vigen 2018*): 
+
+```{r classific-us}
+classification_dat1 %>% 
+  select(applied_rule_3h_us, adjudication) %>% 
+  table()
+```
+
+
+```{r}
+library(caret)
+
+perf.dat <- classification_dat1 %>% 
+  select(rap_id, applied_rule_3h_us, applied_rule_3h_basel, adjudication)
+
+caret::confusionMatrix(data = )
 ```
 
 

@@ -34,19 +34,6 @@ bibliography: ../references/references.bib
 ```{r setup, include=FALSE}
 knitr::opts_chunk$set(echo = FALSE)
 
-## FILTER study cohort to be considered (derivation/ validation) in Section Demographics (Chunk {r vars})
-
-# Patient 1537 duplicated (see Demographics Follow up time)
-
-# `classified_df1`  ... contains all rules
-# `classified_df2`  ... filtered 1 insufficient time interval + all patients without second trop available
-```
-
-
-![AG Meder](../../img/meder_presentation_heart.png)
-
-
-```{r dependencies, include=FALSE}
 # Set the working directory to the directory containing the R Markdown file
 knitr::opts_knit$set(root.dir = rprojroot::find_rstudio_root_file())
 
@@ -65,13 +52,26 @@ library(purrr)
 library(ggplot2)
 library(gt)
 library(skimr)
+library(epiR)
+# packageVersion('epiR') #2.0.48. Important! epiR has completely changes from 2.0.50+
+# If you wish to install the older version of epiR, check this https://support.posit.co/hc/en-us/articles/219949047-Installing-older-versions-of-packages
+library(kableExtra)
+library(flextable)
+#packageVersion('flextable') #0.8.2
+library(officer)
+#packageVersion('officer') #0.4.4
 library(tableone)
 library(Hmisc)
 library(RColorBrewer)
 
 cols <- brewer.pal(3, "BuGn")
 pal <- colorRampPalette(cols)
+
+## FILTER study cohort to be considered (derivation/ validation) in Section Demographics (Chunk {r vars})
 ```
+
+
+![AG Meder](../../img/meder_presentation_heart.png)
 
 
 ```{r load-data, include=FALSE, warning=FALSE}
@@ -90,19 +90,19 @@ The new report version includes:
 
 \clearpage
 
-# Tidy data
-
-To run our algorithm and also to simulate different protocols we need to clean and reshape
-our data. We are going to create a new dataframe `classification_dat` that will contain 
-all measured hs-TroponinT values including the absolute time value. Unlike the original 
-dataframe we are not sorting time between blood drawing by different columns, but will use
-the absolute datetimes.
-\
-Furthermore, we need to filter the original data: `Category__1._NSTEMI_eligible__2._UA_eligible__3._Non_ACS_eligible__4._STEMI__5._Ineligible_` only categories
- 1, 2 or 3 are elgible for our analysis. We can look at the number of patients in each group: 
-
 
 ```{r tidy-data}
+## Tidy data
+# To run our algorithm and also to simulate different protocols we need to clean and reshape
+# our data. We are going to create a new dataframe `classification_dat` that will contain 
+# all measured hs-TroponinT values including the absolute time value. Unlike the original 
+# dataframe we are not sorting time between blood drawing by different columns, but will use
+# the absolute datetimes.
+# \
+# Furthermore, we need to filter the original data: `Category__1._NSTEMI_eligible__2._UA_eligible__3._Non_ACS_eligible__4._STEMI__5._Ineligible_` only categories
+#  1, 2 or 3 are elgible for our analysis. We can look at the number of patients in each group: 
+
+
 # the cpu admission date is in a bad format, so we have to do some hard coding
 new.date <- c()
 for (i in 1:nrow(rapid_orig)) {
@@ -124,8 +124,8 @@ rapid_orig <- rapid_orig %>%
   mutate(across(symptombeginn_1_0_3h_2_3_6h_3_6h_0_unbekannt_nicht_einzugrenzen, ~replace(., is.na(.), 0))) 
 
 
-# Different categories
-table(rapid_orig$category_1_nstemi_eligible_2_ua_eligible_3_non_acs_eligible_4_stemi_5_ineligible)
+## Different categories
+#table(rapid_orig$category_1_nstemi_eligible_2_ua_eligible_3_non_acs_eligible_4_stemi_5_ineligible)
 
 data01 <- rapid_orig %>% 
   cbind(cohort_info_dat[c("rap_id_1", "kohorte_1derivation_2validation")]) %>% 
@@ -370,10 +370,8 @@ ggplot(dist.plot.trop3, aes(x=delta_t_trop2, y=trop_c2))+
 
 ```{r 2ndstep-primary-algorithm-analysis}
 classification_dat1 <- classification_dat1 %>% 
-  filter(!is.na(delta_t_trop2) &
+  filter(#!is.na(delta_t_trop2) &
          applied_rule1=="Observation zone")
-
-cutoff_us <- 7 
 
 # all patients with absolute trop3 >= 15 cannot be ruled out according to novel basel algo! 
 #     -> stay in observe zone
@@ -412,11 +410,70 @@ classification_dat1 <- classification_dat1 %>%
                           delta_absolute_trop = absolute_delta_c_3h)
   )
 
+classification_dat1 %>% 
+  select(applied_rule_3h_basel, adjudication) %>% 
+  mutate(adjudication = ifelse(adjudication == "NSTEMI", "NSTEMI", "non-ACS")) %>% 
+  table()
 
 ```
 
 
-## Performance measures
+# Flow-Chart
+
+```{r flow-chart, fig.height=6, fig.width=10}
+docl <- list() #create a list object for storing results
+docl[["Total_Pop"]] <- nrow(rapid_orig)
+ #drop STEMI and "ineligible" patients
+docl[["Excluded_STEMI_INELIGIBLE"]] <- docl[["Total_Pop"]] - nrow(data01)
+
+#drop patients w/o 1h TnT measurements where needed
+docl[["Excluded_TnT1h_Missing"]] <-sum(applied_rule1 == "Not eligible")
+#drop patients w/o 3h TnT measurements where needed
+docl[["Excluded_TnT3h_Missing_Too_EarlyLate"]] <- sum(classification_dat1$applied_rule_3h_basel != "Rule-in" & classification_dat1$applied_rule_3h_basel != "Rule-out" &  classification_dat1$applied_rule_3h_basel != "Observation zone") 
+
+#save numbers
+docl[["ESC_01_RO"]] <- length(which(classification_dat$applied_rule1 == "Rule-out"))
+docl[["ESC_01_OZ"]] <- length(which(classification_dat$applied_rule1 == "Observation zone"))
+docl[["ESC_01_RI"]] <- length(which(classification_dat$applied_rule1 == "Rule-in"))
+
+docl[["OZ_workup"]] <- classification_dat1 %>% filter(applied_rule_3h_basel == "Rule-in" | applied_rule_3h_basel == "Rule-out" | applied_rule_3h_basel == "Observation zone") %>% nrow()
+#
+## index NSTEMI type 1 or type 2 (not in our data adjudicated (RS Gianni??))
+# docl[["ESC_01_T1_T2"]] <- summarytools::ctable(df$ESC_Algo_Roche, df$NSTEMI_var, useNA = "ifany", prop = "c")
+
+# Flowchart ---------------------------------------------------------------
+
+library(glue); # packageVersion('glue')
+library(consort); # packageVersion('consort')
+
+txt1 <- glue::glue("Patients recruited from \n XXXX to XXXX \n (n={docl$Total_Pop})")
+txt1_side <- glue::glue("Excluded (n={docl$Excluded_STEMI_INELIGIBLE + docl$Excluded_TnT1h_Missing}):\n\u2022 STEMI and ineligible (n={docl$Excluded_STEMI_INELIGIBLE})\n\u2022 No available 1h hs-cTnT values where needed for decision (n={docl$Excluded_TnT1h_Missing})\n\u2022 No available 3h hs-cTnT values where needed for decision (n={docl$Excluded_TnT3h_Missing})")
+txt2 <- glue::glue("Application of ESC 0/1h-\nhs-cTnT algorithm\n(n={docl$ESC_01_RO+docl$ESC_01_OZ+docl$ESC_01_RI})\nTriage decision (n={docl$ESC_01_RO + docl$ESC_01_RI}): \n\u2022 RO: (n={docl$ESC_01_RO}) \n\u2022 RI: (n={docl$ESC_01_RI}) \n\u2022 OZ: (n={docl$ESC_01_OZ})")
+txt2_side <- glue::glue("Excluded (n={docl$Excluded_TnT3h_Missing}):\n\u2022 No available 3h hs-cTnT values where needed for decision")
+txt3 <- glue::glue("External Validation \n novel observe-zone 3h criteria \n (n={docl$OZ_workup})")
+
+
+if (packageVersion('consort') >= '1.1.0') {
+  flowchart <- consort::add_box(txt = txt1) %>% 
+    consort::add_side_box(txt = txt1_side) %>%  # dist does not work from version 1.1.0 onwards
+    consort::add_box(txt = txt2) %>% 
+    consort::add_side_box(txt = txt2_side) %>% 
+    consort::add_box(txt = txt3)
+    
+} else {
+  flowchart <- consort::add_box(txt = txt1) %>% 
+    consort::add_side_box(txt = txt1_side, dist = 0.05) %>%  # dist = 0.05 if you want more distance
+    consort::add_box(txt = txt2, dist = 0.05) %>% 
+    consort::add_side_box(txt = txt2_side, dist = 0.05) %>% 
+    consort::add_box(txt = txt3, dist = 0.05) 
+}
+
+plot(flowchart)
+```
+
+
+
+# Performance measures
 
 Here we show the numbers and diagnoses for the 0/3h Basel algorithm: 
 
@@ -433,16 +490,369 @@ classification_dat1 %>%
   select(applied_rule_3h_us, adjudication) %>% 
   table()
 ```
+## Tables
 
+## ESC 0/1h
 
-```{r}
-library(caret)
+### Rule-out
+
+```{r diagnostic-performance, message=FALSE}
+# Diagnostic Performance ESC 0/1h -----------------------------------------
 
 perf.dat <- classification_dat1 %>% 
   select(rap_id, applied_rule_3h_us, applied_rule_3h_basel, adjudication)
 
-caret::confusionMatrix(data = )
+# classification_dat1 %>% 
+#   select(applied_rule_3h_basel, adjudication) %>% 
+#   summarytools::ctable()
+# https://cran.r-project.org/web/packages/summarytools/vignettes/introduction.html#shiny-apps
+
+## Create binary variable----
+df <- classification_dat %>% 
+  filter(applied_rule1!="Not eligible") %>% 
+  rename(adjudication = category_1_nstemi_eligible_2_ua_eligible_3_non_acs_eligible_4_stemi_5_ineligible) %>% 
+  mutate(endpoint = ifelse(adjudication == 1, "NSTEMI", "non-ACS"))
+
+df$esc_RO <- ifelse(df$applied_rule1=="Rule-out", 0, 1)
+df$esc_RI <- ifelse(df$applied_rule1=="Rule-in", 1, 0)
+
+df$esc_RO <- factor(df$esc_RO,
+                    levels = c(0, 1),
+                    labels = c("RO", "RI"))
+
+df$esc_RI <- factor(df$esc_RI,
+                    levels = c(0, 1),
+                    labels = c("RO", "RI"))
+
+# table(df$esc_RO, useNA = "ifany")
+# table(df$esc_RI, useNA = "ifany")
+
+## RO----
+# This works for any epiR version
+#print("Diagnostic performance for RO")
+#table(df$esc_RO, df$endpoint)
+dat.table.esc.RO <- table(df$esc_RO, df$endpoint)[2:1,2:1]
+results.epitest.esc.RO <- epi.tests(dat.table.esc.RO, conf.level = 0.95, method = "wilson")
+#print(results.epitest.esc.RO)
 ```
+
+```{r create-RO-performance-table}
+results.epitest.esc.RO.safety <- results.epitest.esc.RO$detail %>% 
+  filter(statistic %in% c("se", "pv.neg", "p.rout"))
+
+df.RO.esc <- tibble(Algorithm = "ESC 0/1h",
+                              Sens = results.epitest.esc.RO.safety$est[1],
+                              Sens_lb = results.epitest.esc.RO.safety$lower[1],
+                              Sens_ub = results.epitest.esc.RO.safety$upper[1],
+                              NPV = results.epitest.esc.RO.safety$est[2],
+                              npv_lb = results.epitest.esc.RO.safety$lower[2],
+                              npv_ub = results.epitest.esc.RO.safety$upper[2],
+                              Nbr_FN = results.epitest.esc.RO$tab$`   Outcome +`[2],
+                              Nbr_RO =  results.epitest.esc.RO$tab$`     Total`[2],
+                              prop = results.epitest.esc.RO.safety$est[3],
+                              prop_lb = results.epitest.esc.RO.safety$lower[3],
+                              prop_ub = results.epitest.esc.RO.safety$upper[3])
+
+### Create Table----
+
+# first create new variables containing point estimate and 95% CI
+df.RO.esc.table <- df.RO.esc %>%
+  mutate(`Sens (95% CI)` = sprintf("%.3f (%.3f - %.3f)", Sens, Sens_lb, Sens_ub),
+         `NPV (95% CI)` = sprintf("%.3f (%.3f - %.3f)", NPV, npv_lb, npv_ub),
+         `proportion RO (95% CI)` = sprintf("%.3f (%.3f - %.3f)", prop, prop_lb, prop_ub)) %>%
+  select(Algorithm, `Sens (95% CI)`, `NPV (95% CI)`, Nbr_FN, Nbr_RO, `proportion RO (95% CI)`) %>%
+  rename(`Nbr FN` = Nbr_FN,
+         `Nbr RO` = Nbr_RO)
+
+nbr_col <- dim(df.RO.esc.table)[2]
+
+esc.flex.tab <-
+  qflextable(df.RO.esc.table) %>%
+  autofit() %>%
+  align(align = "center", part = "all")
+
+title_RO <- "Rule Out of NSTEMI (T1 or T2)"
+
+esc.flex.tab <- add_header(esc.flex.tab, Algorithm = title_RO)
+esc.flex.tab <- merge_at(esc.flex.tab, i = 1, j = 1:nbr_col, part = "header")
+esc.flex.tab <- add_header(esc.flex.tab, Algorithm = "Diagnostic Performance Roche ESC 0/1h-algorithm")
+esc.flex.tab <- merge_at(esc.flex.tab, i = 1, j = 1:nbr_col, part = "header")
+std_border = fp_border(width = 0) #define border properties
+esc.flex.tab <- hline(esc.flex.tab, i = 1, border = std_border, part = "header")
+esc.flex.tab <- bold(esc.flex.tab, i = NULL, part = "header")
+esc.flex.tab <- bg(esc.flex.tab, i = 1:2, j = 1:nbr_col, bg = "wheat", part = "header")
+esc.flex.tab <- bg(esc.flex.tab, i = 3, j = 1:nbr_col, bg = "#EFEFEF", part = "header")
+esc.flex.tab <- footnote(esc.flex.tab, i = 1, j = 1, 
+                         value = as_paragraph(c("Patients with 0h- and 1h TnT values")), 
+                         ref_symbols = c("1"), #can choose symbol 
+                         part = "body",
+                         inline = F)
+esc.flex.tab
+
+# ### View False negatives ----
+df %>% 
+  filter(esc_RO == "RO" & endpoint == "NSTEMI") %>% 
+  # "symptombeginn" ==3   # symptom onset >= 6h
+  select(endpoint, applied_rule, symptombeginn, trop_c0, trop_c1, trop_c2, absolute_delta_c, delta_t_min) %>% 
+  rename(
+    Diagnosis=endpoint, Algorithm = applied_rule, Symptom_onset =symptombeginn, 
+    Trop_c0 = trop_c0, Trop_1h = trop_c1, Trop_3h = trop_c2, 
+    Delta_Troponin_01h = absolute_delta_c, Delta_Time_01h = delta_t_min
+  ) %>%   # ECG values: ST Depression, TWI
+  kableExtra::kable(caption = "False Negatives inspection") %>% 
+  kable_classic(full_width = T, html_font = "Cambria")
+```
+
+
+### Rule-in
+
+```{r create-RI-performance-table}
+#print("Diagnostic performance for RI")
+#table(df$esc_RI, df$endpoint)
+dat.table.esc.RI <- table(df$esc_RI, df$endpoint)[2:1,2:1]
+results.epitest.esc.RI <- epi.tests(dat.table.esc.RI, conf.level = 0.95, method = "wilson")
+#print(results.epitest.esc.RI)
+
+### Store results----
+results.epitest.esc.RI.safety <- results.epitest.esc.RI$detail %>% 
+  filter(statistic %in% c("sp", "pv.pos", "p.rin"))
+
+df.RI.esc <- tibble(Algorithm = "ESC 0/1h",
+                              Spec = results.epitest.esc.RI.safety$est[1],
+                              Spec_lb = results.epitest.esc.RI.safety$lower[1],
+                              Spec_ub = results.epitest.esc.RI.safety$upper[1],
+                              PPV = results.epitest.esc.RI.safety$est[2],
+                              ppv_lb = results.epitest.esc.RI.safety$lower[2],
+                              ppv_ub = results.epitest.esc.RI.safety$upper[2],
+                              Nbr_TP = results.epitest.esc.RI$tab$`   Outcome +`[1],
+                              Nbr_RI =  results.epitest.esc.RI$tab$`     Total`[1],
+                              prop = results.epitest.esc.RI.safety$est[3],
+                              prop_lb = results.epitest.esc.RI.safety$lower[3],
+                              prop_ub = results.epitest.esc.RI.safety$upper[3])
+
+### Create Table----
+
+# first create new variables containing point estimate and 95% CI
+df.RI.esc.table <- df.RI.esc %>%
+  mutate(`Spec (95% CI)` = sprintf("%.3f (%.3f - %.3f)", Spec, Spec_lb, Spec_ub),
+         `PPV (95% CI)` = sprintf("%.3f (%.3f - %.3f)", PPV, ppv_lb, ppv_ub),
+         `proportion RI (95% CI)` = sprintf("%.3f (%.3f - %.3f)", prop, prop_lb, prop_ub)) %>%
+  select(Algorithm, `Spec (95% CI)`, `PPV (95% CI)`, Nbr_TP, Nbr_RI, `proportion RI (95% CI)`) %>%
+  rename(`Nbr TP` = Nbr_TP,
+         `Nbr RI` = Nbr_RI)
+
+nbr_col <- dim(df.RI.esc.table)[2]
+
+esc.flex.tab.RI <-
+  qflextable(df.RI.esc.table) %>%
+  autofit() %>%
+  align(align = "center", part = "all")
+
+title_RI <- "Rule In of NSTEMI (T1 or T2)"
+
+esc.flex.tab.RI <- add_header(esc.flex.tab.RI, Algorithm = title_RI)
+esc.flex.tab.RI <- merge_at(esc.flex.tab.RI, i = 1, j = 1:nbr_col, part = "header")
+esc.flex.tab.RI <- add_header(esc.flex.tab.RI, Algorithm = "Diagnostic Performance Roche ESC 0/1h-algorithm")
+esc.flex.tab.RI <- merge_at(esc.flex.tab.RI, i = 1, j = 1:nbr_col, part = "header")
+std_border = fp_border(width = 0) #define border properties
+esc.flex.tab.RI <- hline(esc.flex.tab.RI, i = 1, border = std_border, part = "header")
+esc.flex.tab.RI <- bold(esc.flex.tab.RI, i = NULL, part = "header")
+esc.flex.tab.RI <- bg(esc.flex.tab.RI, i = 1:2, j = 1:nbr_col, bg = "wheat", part = "header")
+esc.flex.tab.RI <- bg(esc.flex.tab.RI, i = 3, j = 1:nbr_col, bg = "#EFEFEF", part = "header")
+esc.flex.tab.RI <- footnote(esc.flex.tab.RI, i = 1, j = 1, 
+                            value = as_paragraph(c("Patients with 0h- and 1h TnT values")), 
+                            ref_symbols = c("1"), #can choose symbol 
+                            part = "body",
+                            inline = F)
+esc.flex.tab.RI
+```
+
+
+## Observe Zone Algorithms
+
+```{r observe-dat-analysis}
+#create data set with only OZ patients. Easier for calculating performance of novel criteria
+#table(classification_dat1$applied_rule_3h_basel)
+df_oz <- classification_dat1 %>% 
+  filter(applied_rule_3h_basel %in% c("Observation zone", "Rule-in", "Rule-out")) %>% 
+  mutate(endpoint = ifelse(adjudication == "NSTEMI", "NSTEMI", "non-ACS"))
+
+
+# Diagnostic Performance OZ criteria --------------------------------------
+## Create binary variable----
+df_oz$ruleout_3h <- ifelse(df_oz$applied_rule_3h_basel == "Rule-out", 0 , 1)
+df_oz$ruleout_3h_fct <- factor(df_oz$ruleout_3h,
+                               0:1,
+                               labels = c("RO", "RI")) 
+# table(df_oz$ruleout_3h_fct, useNA = "ifany")
+
+df_oz$rulein_3h <- ifelse(df_oz$applied_rule_3h_basel == "Rule-in", 1, 0)
+df_oz$rulein_3h_fct <- factor(df_oz$rulein_3h,
+                              0:1,
+                              labels = c("RO", "RI")) 
+
+# table(df_oz$rulein_3h_fct, useNA = "ifany")
+```
+
+### Rule-out OZ
+
+```{r performance-OZ-RO}
+## RO----
+#print("Diagnostic performance for RO of the novel observe-zone criteria")
+#table(df_oz$ruleout_3h_fct, df_oz$endpoint)
+dat.table.esc.RO <- table(df_oz$ruleout_3h_fct, df_oz$endpoint)[2:1,2:1]
+results.epitest.esc.RO <- epi.tests(dat.table.esc.RO, conf.level = 0.95, method = "wilson")
+#print(results.epitest.esc.RO)
+
+### Store results----
+results.epitest.esc.RO.safety <- results.epitest.esc.RO$detail %>% 
+  filter(statistic %in% c("se", "pv.neg", "p.rout"))
+
+df.RO.oz.crit <- tibble(Algorithm = "3h novel criteria",
+                    Sens = results.epitest.esc.RO.safety$est[1],
+                    Sens_lb = results.epitest.esc.RO.safety$lower[1],
+                    Sens_ub = results.epitest.esc.RO.safety$upper[1],
+                    NPV = results.epitest.esc.RO.safety$est[2],
+                    npv_lb = results.epitest.esc.RO.safety$lower[2],
+                    npv_ub = results.epitest.esc.RO.safety$upper[2],
+                    Nbr_FN = results.epitest.esc.RO$tab$`   Outcome +`[2],
+                    Nbr_RO =  results.epitest.esc.RO$tab$`     Total`[2],
+                    prop = results.epitest.esc.RO.safety$est[3],
+                    prop_lb = results.epitest.esc.RO.safety$lower[3],
+                    prop_ub = results.epitest.esc.RO.safety$upper[3])
+
+# df.RO.oz.crit
+
+### Create Table----
+
+# first create new variables containing point estimate and 95% CI
+RO.3h.table <- df.RO.oz.crit %>%
+  mutate(`Sens (95% CI)` = sprintf("%.3f (%.3f - %.3f)", Sens, Sens_lb, Sens_ub),
+         `NPV (95% CI)` = sprintf("%.3f (%.3f - %.3f)", NPV, npv_lb, npv_ub),
+         `proportion RO (95% CI)` = sprintf("%.3f (%.3f - %.3f)", prop, prop_lb, prop_ub)) %>%
+  select(Algorithm, `Sens (95% CI)`, `NPV (95% CI)`, Nbr_FN, Nbr_RO, `proportion RO (95% CI)`) %>%
+  rename(`Nbr FN` = Nbr_FN,
+         `Nbr RO` = Nbr_RO)
+
+nbr_col <- ncol(RO.3h.table)
+
+esc.flex.tab <-
+  qflextable(RO.3h.table) %>%
+  autofit() %>%
+  align(align = "center", part = "all")
+
+title_RO <- "Rule Out of NSTEMI (T1 or T2)"
+
+esc.flex.tab <- add_header(esc.flex.tab, Algorithm = title_RO)
+esc.flex.tab <- merge_at(esc.flex.tab, i = 1, j = 1:nbr_col, part = "header")
+esc.flex.tab <- add_header(esc.flex.tab, Algorithm = "Diagnostic Performance novel observe-zone criteria")
+esc.flex.tab <- merge_at(esc.flex.tab, i = 1, j = 1:nbr_col, part = "header")
+std_border = fp_border(width = 0) #define border properties
+esc.flex.tab <- hline(esc.flex.tab, i = 1, border = std_border, part = "header")
+esc.flex.tab <- bold(esc.flex.tab, i = NULL, part = "header")
+esc.flex.tab <- bg(esc.flex.tab, i = 1:2, j = 1:nbr_col, bg = "wheat", part = "header")
+esc.flex.tab <- bg(esc.flex.tab, i = 3, j = 1:nbr_col, bg = "#EFEFEF", part = "header")
+esc.flex.tab <- footnote(esc.flex.tab, i = 1, j = c(1), 
+                         value = as_paragraph(c("criteria = hs-cTnT 3h < 15ng/L and 0/3h delta < 4ng/L")), 
+                         ref_symbols = c("1"), #can choose symbol 
+                         part = "body",
+                         inline = F)
+esc.flex.tab
+
+### View False negatives ----
+df_oz %>% 
+  filter(ruleout_3h_fct == "RO" & endpoint == "NSTEMI") %>% 
+  # "symptombeginn" ==3   # symptom onset >= 6h
+  select(endpoint, applied_rule, symptombeginn, trop_c0, trop_c1, trop_c2, absolute_delta_c, delta_t_min) %>% 
+  rename(
+    Diagnosis=endpoint, Algorithm = applied_rule, Symptom_onset =symptombeginn, 
+    Trop_c0 = trop_c0, Trop_1h = trop_c1, Trop_3h = trop_c2, 
+    Delta_Troponin_01h = absolute_delta_c, Delta_Time_01h = delta_t_min
+  ) %>%  
+  kableExtra::kable(caption = "False Negatives inspection") %>% 
+  kable_classic(full_width = T, html_font = "Cambria")
+  #select(TnT_0h, TnT_1h, TnT_3h, delta3h_Roche, time, ECG_STdep, ECG_TWI)
+```
+
+### Rule-in OZ
+
+```{r performance-OZ-RI}
+## RI----
+#print("Diagnostic performance for RI of the novel observe-zone criteria")
+#table(df_oz$rulein_3h_fct, df_oz$endpoint)
+dat.table.esc.RI <- table(df_oz$rulein_3h_fct, df_oz$endpoint)[2:1,2:1]
+results.epitest.esc.RI <- epi.tests(dat.table.esc.RI, conf.level = 0.95, method = "wilson")
+#print(results.epitest.esc.RI)
+
+### Store results----
+results.epitest.esc.RI.safety <- results.epitest.esc.RI$detail %>% 
+  filter(statistic %in% c("sp", "pv.pos", "p.rin"))
+
+df.RI.oz.crit <- tibble(Algorithm = "3h novel criteria",
+                              Spec = results.epitest.esc.RI.safety$est[1],
+                              Spec_lb = results.epitest.esc.RI.safety$lower[1],
+                              Spec_ub = results.epitest.esc.RI.safety$upper[1],
+                              PPV = results.epitest.esc.RI.safety$est[2],
+                              ppv_lb = results.epitest.esc.RI.safety$lower[2],
+                              ppv_ub = results.epitest.esc.RI.safety$upper[2],
+                              Nbr_TP = results.epitest.esc.RI$tab$`   Outcome +`[1],
+                              Nbr_RI =  results.epitest.esc.RI$tab$`     Total`[1],
+                              prop = results.epitest.esc.RI.safety$est[3],
+                              prop_lb = results.epitest.esc.RI.safety$lower[3],
+                              prop_ub = results.epitest.esc.RI.safety$upper[3])
+
+# df.RI.oz.crit
+
+### Create Table----
+
+# first create new variables containing point estimate and 95% CI
+RI.3h.table <- df.RI.oz.crit %>%
+  mutate(`Spec (95% CI)` = sprintf("%.3f (%.3f - %.3f)", Spec, Spec_lb, Spec_ub),
+         `PPV (95% CI)` = sprintf("%.3f (%.3f - %.3f)", PPV, ppv_lb, ppv_ub),
+         `proportion RI (95% CI)` = sprintf("%.3f (%.3f - %.3f)", prop, prop_lb, prop_ub)) %>%
+  select(Algorithm, `Spec (95% CI)`, `PPV (95% CI)`, Nbr_TP, Nbr_RI, `proportion RI (95% CI)`) %>%
+  rename(`Nbr TP` = Nbr_TP,
+         `Nbr RI` = Nbr_RI)
+
+nbr_col <- ncol(RI.3h.table)
+
+esc.flex.tab <-
+  qflextable(RI.3h.table) %>%
+  autofit() %>%
+  align(align = "center", part = "all")
+
+title_RI <- "Rule In of NSTEMI (T1 or T2)"
+
+esc.flex.tab <- add_header(esc.flex.tab, Algorithm = title_RI)
+esc.flex.tab <- merge_at(esc.flex.tab, i = 1, j = 1:nbr_col, part = "header")
+esc.flex.tab <- add_header(esc.flex.tab, Algorithm = "Diagnostic Performance novel observe-zone criteria")
+esc.flex.tab <- merge_at(esc.flex.tab, i = 1, j = 1:nbr_col, part = "header")
+std_border = fp_border(width = 0) #define border properties
+esc.flex.tab <- hline(esc.flex.tab, i = 1, border = std_border, part = "header")
+esc.flex.tab <- bold(esc.flex.tab, i = NULL, part = "header")
+esc.flex.tab <- bg(esc.flex.tab, i = 1:2, j = 1:nbr_col, bg = "wheat", part = "header")
+esc.flex.tab <- bg(esc.flex.tab, i = 3, j = 1:nbr_col, bg = "#EFEFEF", part = "header")
+esc.flex.tab <- footnote(esc.flex.tab, i = 1, j = c(1), 
+                         value = as_paragraph(c("criterion = hs-cTnT 0/3h delta ≥ 6ng/L")), 
+                         ref_symbols = c("1"), #can choose symbol 
+                         part = "body",
+                         inline = F)
+esc.flex.tab
+```
+
+
+<!---
+
+# Full 0/1/3h Algorithm
+
+--->
+
+
+```{r}
+
+
+```
+
 
 
 \clearpage
